@@ -1,0 +1,789 @@
+---
+title: "Porto Seguro’s Safe Driver Prediction"
+subtitle: "Predict if a driver will file an insurance claim next year."
+author: "Xiayi Li"
+date: "4/6/2018"
+output:
+  html_document:
+    theme: spacelab
+    highlight: tango
+    includes:
+    toc: true
+    number_sections: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+* Term Paper Project 
+* Winter 2018, DSPA (HS650) 
+* Name: Xiayi Li
+* UMich E-mail: xiayi@umich.edu
+* I certify that the following paper represents my own independent work and conforms with the guidelines of academic honesty described in the UMich student handbook. 
+
+
+# Abstract
+    
+The main goal of our project is to predict whether a driver will file a claim in the next year, which help the insurance company to tailor their prices. Our data is from Porto Seguro company, which is one of Brazil’s largest auto and homeowner insurance companies. Since the data involves some personal information, so the raw data we got is masked data, which means we don't have any prior information of what these variables are, the only information is the groups(features that belong to similar groupings are tagged as such in the feature names) and the type of the variables(binary, chategorical, ect). We first did data exploration, deleted two variables with big proportion of missing data, and resampled our data to get a more balance data set. We fit five models in all, `Logistic Regression`, `PCA+C5.0`, `RandomForest`, `Neural Networks` and `XGBoost`. In addition, we used `confusionMatrix`, `ROC Curve` to evaluate and visualize the performances of the five models. It turned out that `XGBoost` is the best algorithm for this case, the prediction is almost accurate, while the other methods - Logistic Regression, PCA+C5.0, RandomForst, Neural Networks don't have high accuracy in this case.
+
+
+# Introduction and Background
+
+* Our project is a kaggle competition project. The data is from Porto Seguro, one of Brazil’s largest auto and homeowner insurance companies, and all the variables are past information about the drivers. Since inaccuracies in car insurance company’s claim predictions raise the cost of insurance for good drivers and reduce the price for bad ones. In this project, we want to build a model that predicts the probability that a driver will initiate an auto insurance claim in the next year. A more accurate prediction will allow the company to further tailor their prices, and hopefully make auto insurance coverage more accessible to more drivers.
+ 
+* Prediction/Hypothesis: Whether a driver will file a claim is associated with the other variables, and it could be predicted using machine learning algorithms based on the past information.
+
+
+# Data Exploration
+
+Load all packages we will use in this project.
+
+```{r message=FALSE, warning=FALSE}
+library(data.table)
+library(tibble)
+library(purrr)
+library(ggplot2)
+library(ROSE)
+library(dplyr)
+library(magrittr)
+library(gridExtra)
+library(corrplot)
+library(caret)
+library(rvest)
+library(factoextra)
+library(randomForest)
+library(pROC)
+library(ROCR)
+library(C50)
+library(drat)
+library(xgboost)
+library(neuralnet)
+```
+
+
+Data Overview:  
+
+* Features that belong to similar groupings are tagged as such in the feature names (e.g., ind, reg, car, calc).  
+* Feature names include the postfix bin to indicate binary features and cat to indicate categorical features. 
+
+* Features without these designations are either continuous or ordinal.  
+* Values of -1 indicate that the feature was missing from the observation.  
+* The target columns signifies whether or not a claim was filed for that policy holder. 
+
+
+## Read in Data
+
+By tibble, the speed of reading data is faster. For large size data, this will be useful.
+We have 595212 observations and 59 variables in total.
+
+```{r read in data}
+# In this data, "-1" indicates NA. 
+PS <- as.tibble(fread('train.csv', na.strings=c("-1","-1.0")))
+str(PS)
+```
+
+## Exam missing values
+```{r}
+dfmi<-data.frame(feature = names(PS), per_miss = map_dbl(PS, function(x) { sum(is.na(x))/length(x) }))
+ggplot(data=dfmi,aes(x = feature, y = per_miss)) + 
+    geom_bar(stat = 'identity', color = 'white', fill = '#5a64cd') +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+    labs(x = '', y = '% missing', title = 'Missing Values by Feature') + 
+    theme(plot.title = element_text(hjust = 0.5)) + 
+    scale_y_continuous(labels = scales::percent)
+```
+
+* Delete "ps_car_03_cat","ps_car_05_cat" and "ps_reg_03" with big proportion of missing data.
+* Delete "ps_car_11_cat" since the levels of it is abnormal.
+* Delete "id".
+
+```{r}
+colnames(PS)
+ps<-as.data.frame(PS[,-c(1,23,26,28,34)])
+```
+
+
+## Impute missing values
+
+Impute the category features by mode and numeric features by median.
+
+```{r}
+sapply(ps, function(x) sum(is.na(x)))
+mode <- function (x, na.rm) {
+  xtab <- table(x)
+  xmode <- names(which(xtab == max(xtab)))
+  if (length(xmode) > 1) xmode <- ">1 mode"
+  return(xmode)
+}
+ps$ps_ind_05_cat[is.na(ps$ps_ind_05_cat)] <- mode(ps$ps_ind_05_cat, na.rm = TRUE)
+ps$ps_car_07_cat[is.na(ps$ps_car_07_cat)] <-mode(ps$ps_car_07_cat, na.rm = TRUE)
+ps$ps_car_14[is.na(ps$ps_car_14)] <- median(ps$ps_car_14, na.rm = TRUE)
+ps$ps_ind_02_cat[is.na(ps$ps_ind_02_cat)] <- mode(ps$ps_ind_02_cat, na.rm = TRUE)
+ps$ps_car_01_cat[is.na(ps$ps_car_01_cat)] <- mode(ps$ps_car_01_cat, na.rm = TRUE)
+ps$ps_ind_04_cat[is.na(ps$ps_ind_04_cat)] <- mode(ps$ps_ind_04_cat, na.rm = TRUE)
+ps$ps_car_02_cat[is.na(ps$ps_car_02_cat)] <- mode(ps$ps_car_02_cat, na.rm = TRUE)
+ps$ps_car_11[is.na(ps$ps_car_11)] <- median(ps$ps_car_11, na.rm = TRUE)
+ps$ps_car_12[is.na(ps$ps_car_12)] <- median(ps$ps_car_12, na.rm = TRUE)
+ps$ps_car_09_cat[is.na(ps$ps_car_09_cat)] <- mode(ps$ps_car_09_cat, na.rm = TRUE)
+ps$ps_ind_05_cat[is.na(ps$ps_ind_05_cat)] <- mode(ps$ps_ind_05_cat, na.rm = TRUE)
+ps$ps_car_07_cat[is.na(ps$ps_car_07_cat)] <- mode(ps$ps_car_07_cat, na.rm = TRUE)
+table(is.na(ps))
+sapply(ps, function(x) sum(is.na(x)))
+```
+
+
+## Balance Sampling
+
+The target column which we want to predict is unbalance, so we use ovun.sample() to get balance data result. It is necessary to balanced data before applying a machine learning algorithm. If we don't balance it in this case, the algorithm gets biased toward the majority class and fails to map minority class.
+
+We have also compared the performance of the model using original data and balanced sampling data, the latter one has better performance.
+
+### The Original Distribution of target
+
+Check the original distribution of the target. There is only 3.7% observation with target = 1, that is unbalance.
+
+```{r}
+ggplot(data = PS, aes(x = as.factor(target))) + 
+    geom_bar(fill = "lightblue") + 
+    labs(title = 'Distribution of Target Class (1 = claim filed)',x='target') +
+    theme(plot.title = element_text(hjust = 0.5))
+table(ps$target)/nrow(ps)
+```
+
+### Get balanced sample
+
+Since the operating speed of different models are quite different, and we tend to using the biggest size of data considering the operating time on our own computer.
+
+We rebalance our data with 70% of target=0, 30% with target=1.
+
+```{r}
+pddata0 <- ovun.sample(target~.,data=ps,method = "both", p = .3, N = 2000, seed = 1)$data
+pddata <- as.data.frame(pddata0)
+table(pddata0$target)/nrow(pddata0)
+
+pddata0 <- pddata0 %>%
+   mutate_at(vars(ends_with("cat")), funs(factor)) %>%
+   mutate_at(vars(ends_with("cat")), funs(as.numeric))
+str(pddata0)
+```
+
+
+## Turn the data type and seperate the test data and train data. 
+
+As showed above, the "pddata" has some variables with type of chr, so we need to change the data type, and also prepare for the two types of data set for the methods we will apply later.  
+
+* pddata - all the binary and categorical variables set as factor.  
+
+* pddata0 - all variables num or int. 
+
+And we also divide our data set into train and test, seperatly with 70% and 30%.
+
+```{r}
+factorvariable<-function(data){
+  data <- data %>%
+    mutate_at(vars(ends_with("cat")), funs(factor)) %>%
+    mutate_at(vars(ends_with("bin")), funs(factor))
+  data <- data %>%
+    mutate_at((split(names(data),sapply(data, function(x) paste(class(x), collapse=" ")))$integer), funs(as.ordered))
+  return(data)
+}
+pddata$target <- as.factor(pddata0$target) 
+pddata<-factorvariable(pddata0)
+
+str(pddata)
+set.seed(123)
+sample_index <- sample(nrow(pddata), replace = FALSE, size = 0.7*nrow(pddata))
+train <- pddata[sample_index,]
+test<-pddata[-sample_index,]
+train0 <- pddata0[sample_index,]
+test0<-pddata0[-sample_index,]
+```
+
+
+## Data Visulization after Balance Sampling
+```{r data visulization}
+ggplot(pddata0, aes(target)) + geom_bar(fill = "lightblue") + ggtitle("Distribution of Target") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r ps_ind visulization}
+#ps_ind(continuous)
+p1 <- ggplot(pddata0, aes(ps_ind_01)) + geom_histogram(binwidth = 1, fill = "lightblue") 
+p2 <- ggplot(pddata0, aes(ps_ind_03)) + geom_histogram(binwidth = 1, fill = "lightblue") 
+p3 <- ggplot(pddata0, aes(ps_ind_14)) + geom_histogram(binwidth = 1, fill = "lightblue") 
+p4 <- ggplot(pddata0, aes(ps_ind_15)) + geom_histogram(binwidth = 1, fill = "lightblue") 
+
+#ps_ind(category)
+p5 <- ggplot(pddata0, aes(ps_ind_02_cat)) + geom_bar(fill = "lightblue")
+p6 <- ggplot(pddata0, aes(ps_ind_04_cat)) + geom_bar(fill = "lightblue")
+p7 <- ggplot(pddata0, aes(ps_ind_05_cat)) + geom_bar(fill = "lightblue")
+
+#ps_ind(binary)
+p8 <- ggplot(pddata0, aes(ps_ind_06_bin)) + geom_bar(fill = "lightblue")
+p9 <- ggplot(pddata0, aes(ps_ind_07_bin)) + geom_bar(fill = "lightblue")
+p10 <- ggplot(pddata0, aes(ps_ind_08_bin)) + geom_bar(fill = "lightblue")
+p11 <- ggplot(pddata0, aes(ps_ind_09_bin)) + geom_bar(fill = "lightblue")
+p12 <- ggplot(pddata0, aes(ps_ind_10_bin)) + geom_bar(fill = "lightblue")
+p13 <- ggplot(pddata0, aes(ps_ind_11_bin)) + geom_bar(fill = "lightblue")
+p14 <- ggplot(pddata0, aes(ps_ind_12_bin)) + geom_bar(fill = "lightblue")
+p15 <- ggplot(pddata0, aes(ps_ind_13_bin)) + geom_bar(fill = "lightblue")
+p16 <- ggplot(pddata0, aes(ps_ind_16_bin)) + geom_bar(fill = "lightblue")
+p17 <- ggplot(pddata0, aes(ps_ind_17_bin)) + geom_bar(fill = "lightblue")
+p18 <- ggplot(pddata0, aes(ps_ind_18_bin)) + geom_bar(fill = "lightblue")
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16, p17, p18, nrow = 5)
+```
+
+
+```{r ps_reg visulization}
+#ps_reg
+p1 <- ggplot(pddata0, aes(ps_reg_01)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p2 <- ggplot(pddata0, aes(ps_reg_02)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+grid.arrange(p1, p2, nrow = 1)
+```
+
+```{r ps_car visulization}
+#ps_car(continuous)
+p1 <- ggplot(pddata0, aes(ps_car_11)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p2 <- ggplot(pddata0, aes(ps_car_12)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p3 <- ggplot(pddata0, aes(ps_car_13)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p4 <- ggplot(pddata0, aes(ps_car_14)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p5 <- ggplot(pddata0, aes(ps_car_15)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+
+#ps_car(category)
+p6 <- ggplot(pddata0, aes(ps_car_01_cat)) + geom_bar(fill = "lightblue")
+p7 <- ggplot(pddata0, aes(ps_car_02_cat)) + geom_bar(fill = "lightblue")
+p9 <- ggplot(pddata0, aes(ps_car_04_cat)) + geom_bar(fill = "lightblue")
+p11 <- ggplot(pddata0, aes(ps_car_06_cat)) + geom_bar(fill = "lightblue")
+p12 <- ggplot(pddata0, aes(ps_car_07_cat)) + geom_bar(fill = "lightblue")
+p13 <- ggplot(pddata0, aes(ps_car_08_cat)) + geom_bar(fill = "lightblue")
+p14 <- ggplot(pddata0, aes(ps_car_09_cat)) + geom_bar(fill = "lightblue")
+p15 <- ggplot(pddata0, aes(ps_car_10_cat)) + geom_bar(fill = "lightblue")
+grid.arrange(p1, p2, p3, p4, p5,p6, p7, p9, p11, p12, p13, p14, p15, nrow = 4)
+```
+
+```{r ps_calc visulization}
+#ps_calc(continuous)
+p1 <- ggplot(pddata0, aes(ps_calc_01)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p2 <- ggplot(pddata0, aes(ps_calc_02)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p3 <- ggplot(pddata0, aes(ps_calc_03)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p4 <- ggplot(pddata0, aes(ps_calc_04)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p5 <- ggplot(pddata0, aes(ps_calc_05)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p6 <- ggplot(pddata0, aes(ps_calc_06)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p7 <- ggplot(pddata0, aes(ps_calc_07)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p8 <- ggplot(pddata0, aes(ps_calc_08)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p9 <- ggplot(pddata0, aes(ps_calc_09)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p10 <- ggplot(pddata0, aes(ps_calc_10)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p11 <- ggplot(pddata0, aes(ps_calc_11)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p12 <- ggplot(pddata0, aes(ps_calc_12)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p13 <- ggplot(pddata0, aes(ps_calc_13)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+p14 <- ggplot(pddata0, aes(ps_calc_14)) + geom_histogram(binwidth = 0.5, fill = "lightblue") 
+
+#ps_calc(binary)
+p15 <- ggplot(pddata0, aes(ps_calc_15_bin)) + geom_bar(fill = "lightblue")
+p16 <- ggplot(pddata0, aes(ps_calc_16_bin)) + geom_bar(fill = "lightblue")
+p17 <- ggplot(pddata0, aes(ps_calc_17_bin)) + geom_bar(fill = "lightblue")
+p18 <- ggplot(pddata0, aes(ps_calc_18_bin)) + geom_bar(fill = "lightblue")
+p19 <- ggplot(pddata0, aes(ps_calc_19_bin)) + geom_bar(fill = "lightblue")
+p20 <- ggplot(pddata0, aes(ps_calc_20_bin)) + geom_bar(fill = "lightblue")
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16, p17, p18, p19, p20, nrow = 5)
+```
+
+
+# Methods and Results
+
+
+## Logistic Regression
+
+### Correlation
+
+Checking the correlations between variables. `corrplot` is a good way to visualize the correlation between variables.
+
+```{r}
+M <- cor(pddata0[1:36])  # the latter variables has little correlation with others
+corrplot(M, method = "circle", title = "Correlation", tl.cex = 0.5, tl.col = 'black', mar=c(1, 1, 1, 1))
+```
+
+```{r}
+cor(ps$ps_ind_14, ps$ps_ind_12_bin)
+cor(ps$ps_ind_14, ps$ps_ind_11_bin)
+cor(ps$ps_car_13, ps$ps_car_12)
+cor(ps$ps_ind_18_bin, ps$ps_ind_16_bin)
+```
+Decide to delete ps_ind_14 from the logistic model.
+
+### Train the Model
+```{r include=FALSE}
+pddata0 <- ovun.sample(target~.,data=ps,method = "both",p=.3,N=5000,seed=1)$data
+pddata0 <- pddata0 %>%
+   mutate_at(vars(ends_with("cat")), funs(factor)) %>%
+   mutate_at(vars(ends_with("cat")), funs(as.numeric))
+
+subset_int <- sample(nrow(pddata0), floor(nrow(pddata0)*0.7))
+train_train <- pddata0[subset_int, -15] 
+train_test <- pddata0[-subset_int, -15 ]
+#table(train_train$target)/nrow(train_train)
+#table(train_test$target)/nrow(train_test)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+base.model <- glm(target ~ 1, data = train_train, family = binomial(link = 'logit'))
+all.model <- glm(target ~ . , data = train_train, family = binomial(link = 'logit'))
+ols_step <- step(base.model, scope = list(lower = base.model, upper = all.model), direction = 'both', k=2, trace = F)
+```
+
+
+```{r}
+ols_step
+summary(ols_step)
+
+log_preds <- predict(ols_step, newdata = train_test[,-1], type = "response")
+log_preds <- data.frame(log_preds = log_preds)
+log_preds <- round(log_preds)
+table(log_preds)
+log_pred_compare <- cbind(log_preds, train_test$target)
+```
+
+
+### Evaluate the Performance
+
+The Kappa statistic varies from 0 to 1, where:
+
+* 0 = agreement equivalent to chance.
+* 0.1 – 0.20 = slight agreement.
+* 0.21 – 0.40 = fair agreement.
+* 0.41 – 0.60 = moderate agreement.
+* 0.61 – 0.80 = substantial agreement.
+* 0.81 – 0.99 = near perfect agreement
+* 1 = perfect agreement.
+
+```{r}
+confusionMatrix(as.factor(log_pred_compare$log_preds), as.factor(log_pred_compare$`train_test$target`))
+logi_cor<-cor(log_pred_compare$log_preds, log_pred_compare$`train_test$target`);logi_cor
+```
+
+The typical interpretation of the area under curve (AUC):
+
+* Outstanding: 0.9-1.0
+* Excellent/good: 0.8-0.9
+* Acceptable/fair: 0.7-0.8
+* Poor: 0.6-0.7
+* No discrimination: 0.5-0.6
+
+```{r}
+pred<-ROCR::prediction(log_pred_compare$log_preds, log_pred_compare$`train_test$target`) 
+roc_logi<-performance(pred,measure="tpr", x.measure="fpr")
+plot(roc_logi, main="ROC curve for Logistic Regression Model", col="blue", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+roc_logi_auc<-performance(pred, measure="auc")
+roc_logi_auc@y.values
+
+cor(log_pred_compare$log_preds, log_pred_compare$`train_test$target`)
+```
+
+
+### Conclusion
+
+As the result of logistic regression shows, the stepwise algorithm chooses 11 variables into the model. But as the evaluation shows, this model is not robust, since accuracy, kappa or the area under ROC curve all shows that its performance is poor. 
+
+Logistic regression may not be a good model for this case, but the variable it choose could be used in other algorithm.
+
+
+## PCA
+### Fitting a PCA model
+```{r}
+prin_comp <- prcomp(train0[,-1], scale. = T)
+```
+
+### Visulization of PCS 
+```{r}
+fviz_pca_biplot(prin_comp, axes = c(1, 2), geom = "point",
+  col.ind = "black", col.var = "steelblue", label = "all",
+  invisible = "none", repel = F, habillage = train$target, 
+  palette = NULL, addEllipses = TRUE, title = "PCA - Biplot")
+```
+
+```{r}
+#compute standard deviation of each principal component
+std_dev <- prin_comp$sdev
+#compute variance
+pr_var <- std_dev^2
+#check variance of first 10 components
+pr_var[1:10]
+#proportion of variance explained
+prop_varex <- pr_var/sum(pr_var)
+prop_varex[1:20]
+```
+
+
+
+```{r}
+plot(prop_varex, xlab = "Principal Component",
+         ylab = "Proportion of Variance Explained",
+         type = "b")
+```
+
+```{r}
+ plot(cumsum(prop_varex), xlab = "Principal Component",
+        ylab = "Cumulative Proportion of Variance Explained",type="b")
+```
+
+
+The plot above shows that ~ 40/50 components explains around 90%+ variance in the data set. In order words, using PCA we have reduced 54 predictors to 40/50 without compromising on too many explained variance. 
+
+
+### Build a PCA-C5.0 model
+
+Build the C5.0 model on raw data for a sanity check
+```{r}
+cmodel<-C5.0(train0[,-1],as.factor(train$target))
+predrp <- predict(cmodel, test0[, -1], type="class")
+target1<-as.factor(test0$target)
+confusionMatrix(predrp, target1)
+```
+```{r}
+predrp<-ROCR::prediction(predictions=as.numeric(predrp), labels=test$target) 
+rocrp<-performance(predrp,measure="tpr", x.measure="fpr")
+plot(rocrp, main="ROC curve for C5.0 Model", col="blue", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+rocrp_auc<-performance(predrp, measure="auc")
+rocrp_auc@y.values
+```
+
+
+add a training set with principal components
+```{r}
+train.data <- data.frame(target = train0$target, prin_comp$x)
+train.data <- train.data[,1:40]
+```
+
+
+```{r}
+test.zspace <- predict(prin_comp, newdata=test0[, -1])
+pca.train.df <- as.data.frame(prin_comp$x)
+```
+
+
+Run a decision tree,transform test into PCA
+```{r}
+pca.model <- C5.0(pca.train.df,as.factor(train0$target))
+pca.test.df <- as.data.frame(test.zspace)
+pca.test.df$target <- test0[, 1]
+pca.pred <- predict(pca.model, pca.test.df[,-54], type="class")
+confusionMatrix(pca.pred, target1)
+```
+
+```{r}
+predpca<-ROCR::prediction(predictions=as.numeric(pca.pred), labels=test$target) 
+rocpca<-performance(predpca,measure="tpr", x.measure="fpr")
+plot(rocpca, main="ROC curve for PCA+C5.0 Model", col="blue", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+
+rocpca_auc<-performance(predpca, measure="auc")
+rocpca_auc@y.values
+
+```
+### Conclusion
+
+In this data, PCs don't have a "elbow" plot, and most of the PCs explain about the same amount of variation. Thus, it's hard to tell which PCs or factors we need to pick. And the performance of C5.0 model is not improved and even worse. Thus, the PCA is not suitable for this data analysis.
+
+## RandomForest model
+
+### Build a Random Forest model
+```{r}
+mt<-floor(sqrt(ncol(train)))
+rf.fit <- randomForest(target~. , data=train,importance=TRUE,ntree=500,mtry=mt)
+varImpPlot(rf.fit, cex=0.5); print(rf.fit)
+plot(rf.fit,main="model")
+```
+ 
+The select of the mtry: $$mtry=floor(\sqrt{ncol(data)})=7$$
+ 
+### Get the important features
+```{r}
+var.imp <- data.frame(importance(rf.fit,type=2))
+var.imp$Variables <- row.names(var.imp)
+varord<-var.imp[order(var.imp$MeanDecreaseGini,decreasing = T),]
+imprf<-varord$Variables[1:25]
+imprf
+```
+
+```{r}
+predrf1 <- predict(rf.fit,test,type="prob")
+summary(predrf1)
+predrf2<-predict(rf.fit,test)
+confusionMatrix(predrf2,test$target)
+```
+
+```{r}
+pred<-ROCR::prediction(predictions=predrf1[,2], labels=test$target) 
+roc<-performance(pred,measure="tpr", x.measure="fpr")
+plot(roc, main="ROC curve for Random Forest Model", col="blue", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+
+roc_auc<-performance(pred, measure="auc")
+roc_auc@y.values
+
+```
+
+### Conclusion 
+ 
+As expected, the performance of Random Forest model is much better than the single decision tree since Random Forest model is an ensemble classifier which uses many decision tree models to predict the result.
+
+
+## Neural Networks
+
+### Build a NN model
+```{r}
+fmla <- as.formula(paste("target ~ ", paste(colnames(train0[,-1]), collapse= "+")))
+
+NN_model<-neuralnet(fmla, data=as.matrix(train0), hidden = 5,stepmax = 1e6)
+
+NN_pred<-compute(NN_model, test0[, -1])
+NN_pred_results<-ifelse(NN_pred$net.result>0.5,1,0)
+confusionMatrix(as.factor(NN_pred_results),as.factor(test0$target))
+```
+
+```{r}
+prednn<-ROCR::prediction(predictions=NN_pred_results, labels=target1) 
+rocnn<-performance(prednn,measure="tpr", x.measure="fpr")
+plot(rocnn, main="ROC curve for Neutral Network Model", col="blue", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+
+rocnn_auc<-performance(prednn, measure="auc")
+rocnn_auc@y.values
+
+```
+
+### Conclusion 
+
+The Neural Network is expected to perform better than the model before. However, the process of model building is really time-consuming that results in the difficulty of tuning parameters.  
+
+
+## XGBoost 
+
+XGBoost is short for “Extreme Gradient Boosting”. XGBoost is used for supervised learning problems, where we use the training data (with multiple features) xi to predict a target variable yi. The algorithm contains two parts: training loss and regularization. The model of xgboost: tree ensembles. The tree ensemble model is a set of classification and regression trees (CART). In CART, a real score is associated with each of the leaves, which gives us richer interpretations that go beyond classification.
+
+```{r include=FALSE}
+pddata0 <- ovun.sample(target~.,data=ps,method = "both",p=.3,N=500000,seed=1)$data
+pddata0 <- pddata0 %>%
+   mutate_at(vars(ends_with("cat")), funs(factor)) %>%
+   mutate_at(vars(ends_with("cat")), funs(as.numeric))
+
+subset_int <- sample(nrow(pddata0), floor(nrow(pddata0)*0.7))
+train_train <- pddata0[subset_int, -c(10,13)] 
+train_test <- pddata0[-subset_int, -c(10,13)]
+table(train_train$target)/nrow(train_train)
+table(train_test$target)/nrow(train_test)
+```
+
+
+### Based on all the variables
+#### Train the Model
+
+```{r message=FALSE, warning=FALSE}
+
+labels = train_train['target']
+y <- labels$target
+
+bstSparse <- xgboost(data = data.matrix(train_train[,-1]), label = y, max.depth = 30, eta = 0.05, nthread = 3, nround = 30, objective = "binary:logistic")
+xgb_pred <- predict(bstSparse, data.matrix(train_test[,-1]))
+xgb_pred <- data.frame(xgb_pred)
+xgb_pred <- round(xgb_pred)
+xgb_pred_compare <- cbind(xgb_pred, train_test$target)
+
+```
+
+#### Evaluate the Performance
+
+```{r}
+confusionMatrix(as.factor(xgb_pred_compare$xgb_pred), as.factor(xgb_pred_compare$`train_test$target`))
+
+pred_xgb<-ROCR::prediction(xgb_pred_compare$xgb_pred, xgb_pred_compare$`train_test$target`) 
+roc_xgb<-performance(pred_xgb, measure="tpr", x.measure="fpr")
+plot(roc_xgb, main="ROC curve for XGBoost Model", col="blue", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+
+roc_xgb_auc<-performance(pred_xgb, measure="auc")
+roc_xgb_auc@y.values
+
+cor(xgb_pred_compare$xgb_pred, xgb_pred_compare$`train_test$target`)
+```
+
+
+#### Conclusion
+
+It is obvious that XGBoost model works perfect for this case. The reason for its good performance: XGBoost model runs much faster than other methods, so we apply the biggest data set to this case, which train the model better than others. And also XGBoost has sparsity-awareness, since boosted trees work especially well on categorical features, and our data set has much categorical variables. The reason why XGBoost runs so fast is that the sparse data structure and clever implementation allow XGBoost sort columns independently, this way, the sorting work can be divided up between parallel threads of CPU.  
+
+
+### Based on Selected Variables from previous methods
+#### Variables Selection
+```{r}
+imprf  #selected variables from RandomForest
+ols_step$coefficients  # from logistic regression
+#Using the union of the two methods
+sele_variable <- c("target", "ps_car_06_cat","ps_car_13","ps_car_01_cat", "ps_car_14","ps_ind_15","ps_calc_10", "ps_ind_03", "ps_reg_02","ps_calc_14","ps_calc_11","ps_calc_03","ps_calc_01","ps_calc_02","ps_calc_08","ps_calc_13","ps_calc_07" ,"ps_car_15", "ps_ind_05_cat","ps_reg_01","ps_calc_06","ps_ind_01","ps_car_12","ps_calc_05","ps_calc_09", "ps_ind_17_bin","ps_ind_15", "ps_car_07_cat")
+```
+
+#### Train the Model
+```{r message=FALSE, warning=FALSE}
+train_train_se <- train_train[,sele_variable]
+train_test_se <- train_test[,sele_variable]
+  
+labels = train_train_se['target']
+y <- labels$target
+
+bstSparse_se <- xgboost(data = data.matrix(train_train_se[,-1]), label = y, max.depth = 30, eta = 0.05, nthread = 3, nround = 30, objective = "binary:logistic")
+xgb_se_pred <- predict(bstSparse_se, data.matrix(train_test_se[,-1]))
+xgb_se_pred <- data.frame(xgb_se_pred)
+xgb_se_pred <- round(xgb_se_pred)
+xgb_se_pred_compare <- cbind(xgb_se_pred, train_test_se$target)
+```
+
+#### Evaluate the Performance
+
+```{r}
+confusionMatrix(as.factor(xgb_se_pred_compare$xgb_se_pred), as.factor(xgb_se_pred_compare$`train_test_se$target`))
+roc_se_xgb_cor <- cor(xgb_se_pred_compare$xgb_se_pred, xgb_se_pred_compare$`train_test_se$target`)
+
+pred_se<-ROCR::prediction(xgb_se_pred_compare$xgb_se_pred, xgb_se_pred_compare$`train_test_se$target`) 
+roc_se_xgb<-performance(pred_se,measure="tpr", x.measure="fpr")
+plot(roc_se_xgb, main="ROC curve for XGBoost Model(Selected Variables)", col="blue", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+
+roc_se_xgb_auc<-performance(pred_se, measure="auc")
+roc_se_xgb_auc@y.values
+```
+
+#### Conclusion
+
+This model doesn't have better performance than the previous one, possibly because variables we select is from logistic regression and Random Forest, who don't have a very good performance, so we can doubt that using the variables from logistic and the top 25 variables sorted by random forest is not reliable enough to fully predict the target.  
+
+
+
+# Discussion and Conclusion
+## Compare the confusion matrix
+```{r include=FALSE}
+#Logistic Model
+confusionMatrix(as.factor(log_pred_compare$log_preds), as.factor(log_pred_compare$`train_test$target`))
+
+#PCA+C5.0
+confusionMatrix(pca.pred, target1)
+
+#RandomForest
+confusionMatrix(predrf2,test$target)
+
+#Neutral Network
+confusionMatrix(as.factor(NN_pred_results),as.factor(test0$target))
+
+#XGBoost
+confusionMatrix(as.factor(xgb_pred_compare$xgb_pred),as.factor(xgb_pred_compare$`train_test$target`))
+
+```
+
+Method | Accuracy  |  Kappa  |  Sensitivity   |  Specificity 
+------------- | -------------  | ---- | ----| ---- 
+Logistic Regression | 0.7023 | 0.0491 | 0.9788 | 0.0578
+PCA+C5.0 | 0.6883 | 0.0615 | 0.9347 | 0.1138
+Random Forest | 0.7533 | 0.2539 | 0.9838 | 0.2160
+Neural Networks | 0.7000 | 0.0064 | 0.9973 | 0.0072
+XGBoost | 0.9934 | 0.9842 | 0.9968 | 0.9853
+
+
+
+## Compare ROC
+
+```{r echo=FALSE}
+par(pty="s")
+#Logistic Model
+plot(roc_logi, main="ROC curve", col = "red", lwd=3)
+segments(0, 0, 1, 1, lty=2)
+# Random Forest Model
+plot(roc, main="ROC curve for Random Forest Model", col = "light green", add = TRUE, lwd=3)
+# C5.0 
+plot(rocrp, main="ROC curve for C5.0 Model", col="blue", add = TRUE, lwd=3)
+#Neural Network
+plot(rocnn, main="ROC curve for Neural Network Model", col="yellow", add = TRUE, lwd=3)
+#XGBoost
+plot(roc_xgb, main="ROC curve for XGBoost Model", col="light blue", add = TRUE, lwd=3)
+
+legend("bottomright", 
+  legend = c("Logistic Regression", "Random Forest", "PCA", "Neural Network", "XGBoost"), 
+  col = c("red", "light green", "blue", "yellow", "light blue"), lty=1:2, cex=0.8,
+       box.lty=0
+          )
+```
+
+For this ROC curve plot, the plots are angle-shape elbow, it is because the true value is binary and the prediction is also binary. For the method Random Forest, since the output is a probability, not binary, so the curve is not angle-shape elbow
+
+```{r include=FALSE}
+#Logistic Model
+roc_logi_auc@y.values
+# Random Forest Model
+roc_auc@y.values
+# C5.0 
+rocrp_auc@y.values
+#Neural Network
+rocnn_auc@y.values
+#XGBoost
+roc_xgb_auc@y.values
+```
+
+
+Method | ROC area
+------------- | -------------
+Logistic Regression | 0.5241
+PCA+C5.0 | 0.5242
+Random Forest | 0.6869
+Neural Networks | 0.5022
+XGBoost | 0.9911
+
+
+## Conclusion
+
+From the evaluation table above, we can conclude that in this case, the performance of XGBoost is the best, here are some reasons why the other algorithms perform poorly:
+
+* For Logistic Regression, it performs poorly when there are non-linear relationships, the model is not naturally flexible enough to capture more complex patterns. And since we don't have prior knowledge, we can't skip out the variables by hand.
+
+* For Neural Networks, the reason for the poor performance is that we are only able to fit the model with one hidden layer and limited neurons. Thus, the power of this model is not employed fully. This deep learning algorithm requires a very large amount of data and much more expertise to tune,thus it is computationally intensive to train.
+
+* For the C5.0 decision model, the unconstrained, individuals trees are prone to overfitting. And this weekness can be alleviated by using ensembles. That's the reason why Random Forest has good performance.
+
+* For PCA, we realize that the primary components of this data are not useful, which may be the result that this data features are not closed to Gaussian.
+
+For future extension, we hope the full data (6 million) can be used to train the models rather than constrained by operation speed of computers. And, for the neural network model, more layers and neurons can be applied in the model with elegant adjustment.
+
+
+# Acknowledgements
+
+I gratefully acknowledge the help of Dr. Ivo Dinov during this semester, and also the expert advice and encouragement for our final project. It is a pleasure to be a student in this class, I really enjoy this course during the semester. And it is always happy to chat with you regarding professional problems.
+
+
+# References
+ 
+* Porto Seguro's Safe Driver Prediction | Kaggle. Retrieved  from https://www.kaggle.com/c/porto-seguro-safe-driver-prediction  
+* Black Box Machine-Learning Methods: Neural Networks and Support Vector Machines. Retrieved from http://www.socr.umich.edu/people/dinov/courses/DSPA_notes/10_ML_NN_SVM_Class.html 
+* Evaluating Model Performance. Retrieved from http://www.socr.umich.edu/people/dinov/courses/DSPA_notes/13_ModelEvaluation.html 
+* Specialized Machine Learning Topics. Retrieved from http://www.socr.umich.edu/people/dinov/courses/DSPA_notes/15_SpecializedML_FormatsOptimization.html
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
